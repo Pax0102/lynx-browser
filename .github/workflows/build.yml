@@ -84,7 +84,20 @@ jobs:
               f.writelines(result)
           print(f'Corrigido: {path}')
           PYEOF
-          find . -name "cbindgen.toml" | while read toml; do
+          # FIX: NUNCA tocar em third_party/rust/ (ou qualquer outra pasta
+          # vendorizada pelo Cargo) aqui. Cada crate vendorizado tem um
+          # checksum registrado (.cargo-checksum.json), verificado pelo
+          # [source] "directory" do .cargo/config.toml. Editar qualquer
+          # arquivo lá dentro — mesmo reescrevendo com conteúdo idêntico —
+          # invalida esse checksum e o Cargo recusa compilar mais tarde,
+          # com um erro tipo:
+          #   "error: the listed checksum of '.../third_party/rust/<crate>/
+          #    cbindgen.toml' has changed"
+          # O bug de chaves duplicadas que este passo corrige é do código
+          # PRÓPRIO do Firefox (ex: servo/ports/geckolib/cbindgen.toml),
+          # nunca de dependências de terceiros — então excluir third_party/
+          # da busca não deixa nada real sem corrigir.
+          find . -path "./third_party" -prune -o -name "cbindgen.toml" -print | while read toml; do
             echo "Verificando: $toml"
             python3 /tmp/fix_toml.py "$toml"
           done
