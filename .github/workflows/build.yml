@@ -1,1 +1,105 @@
+name: Build Lynx Browser
 
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libgtk-3-dev libdbus-glib-1-dev \
+            libxt-dev libx11-xcb-dev libxcb-shm0-dev \
+            curl python3 python3-pip nasm yasm \
+            libpulse-dev libasound2-dev \
+            zip unzip git mercurial
+
+      - name: Instalar Rust
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Baixar código fonte do Firefox
+        run: |
+          curl -L "https://archive.mozilla.org/pub/firefox/releases/128.0/source/firefox-128.0.source.tar.xz" \
+            -o firefox-source.tar.xz
+          tar -xJf firefox-source.tar.xz
+          mv firefox-128.0 firefox-src
+          rm firefox-source.tar.xz
+
+      - name: Aplicar patches de renomeação
+        run: |
+          cd firefox-src
+          # Renomeia Firefox → Lynx em strings principais
+          find . -type f \( -name "*.properties" -o -name "*.ftl" -o -name "*.ini" \) | \
+            xargs grep -l "Firefox" | \
+            xargs sed -i 's/Mozilla Firefox/Lynx Browser/g; s/Firefox/Lynx/g'
+          
+          # Renomeia em arquivos de configuração
+          sed -i 's/Firefox/Lynx/g' browser/config/version.txt || true
+          
+          # Aplica patches customizados se existirem
+          if [ -f "../patches/branding.patch" ]; then
+            patch -p1 < ../patches/branding.patch || true
+          fi
+
+      - name: Copiar branding customizado
+        run: |
+          cd firefox-src
+          # Copia logo para os locais de branding
+          cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo@2x.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/default256.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/default128.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/default64.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/default48.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/default32.png
+          cp ../branding/lynx-logo.png browser/branding/unofficial/default16.png
+
+      - name: Copiar mozconfig
+        run: |
+          cp config/mozconfig firefox-src/.mozconfig
+
+      - name: Copiar home.html
+        run: |
+          cp config/home.html firefox-src/browser/extensions/newtab/prerendered/activity-stream-noscripts.html || true
+
+      - name: Compilar
+        run: |
+          cd firefox-src
+          export MOZBUILD_STATE_PATH=$HOME/.mozbuild
+          python3 ./mach bootstrap --application-choice=browser --no-interactive || true
+          python3 ./mach build
+
+      - name: Empacotar
+        run: |
+          cd firefox-src
+          python3 ./mach package
+          # Move o pacote gerado
+          find obj-* -name "*.tar.bz2" -exec cp {} ../lynx-browser-linux-x64.tar.bz2 \;
+
+      - name: Upload do artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: lynx-browser-linux-x64
+          path: lynx-browser-linux-x64.tar.bz2
+          retention-days: 30
+
+      - name: Criar Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Lynx Browser v1.0.${{ github.run_number }}
+          files: lynx-browser-linux-x64.tar.bz2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
