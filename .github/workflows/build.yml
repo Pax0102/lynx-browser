@@ -40,16 +40,13 @@ jobs:
         run: |
           cd firefox-src
 
-          # Troca Nightly → Lynx Browser nos arquivos de branding
-          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.ftl || true
-          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.properties || true
-          sed -i 's/nightly/lynx/g' browser/branding/unofficial/configure.sh || true
+          # Troca Nightly → Lynx Browser APENAS nos arquivos de branding específicos
+          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.ftl 2>/dev/null || true
+          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.properties 2>/dev/null || true
 
-          # Troca Mozilla Firefox → Lynx Browser APENAS em arquivos de string/localização
-          # NUNCA mexe em .rs, .toml, .py, .cpp, .h, .js (código fonte)
-          find . -type f \( -name "*.properties" -o -name "*.ftl" -o -name "*.ini" -o -name "*.dtd" \) | \
-            grep -v "node_modules\|third_party\|\.cargo" | \
-            xargs grep -l "Firefox\|Nightly\|Mozilla" 2>/dev/null | \
+          # Troca Mozilla Firefox → Lynx Browser APENAS em .properties e .ftl de localização
+          # Exclui explicitamente qualquer arquivo .toml, .rs, .py, .cpp, .h, .js
+          find browser/locales browser/branding -type f \( -name "*.properties" -o -name "*.ftl" \) | \
             xargs sed -i \
               's/Mozilla Firefox Nightly/Lynx Browser/g;
                s/Firefox Nightly/Lynx Browser/g;
