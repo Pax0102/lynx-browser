@@ -2,6 +2,7 @@
 
 Navegador baseado no Firefox com identidade própria.
 
+
 ## Como funciona
 
 O GitHub Actions compila automaticamente quando você faz push na branch `main`.
