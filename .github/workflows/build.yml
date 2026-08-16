@@ -183,7 +183,7 @@ jobs:
         working-directory: firefox-src
         run: |
           export MOZBUILD_STATE_PATH=$HOME/.mozbuild
-          python3 ./mach bootstrap --application-choice=browser --no-interactive
+          python3 ./mach bootstrap --application-choice=browser
 
       - name: Compilar
         run: |
