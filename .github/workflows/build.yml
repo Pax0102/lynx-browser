@@ -5,319 +5,256 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repositório
+      - name: Checkout repositório do Lynx
         uses: actions/checkout@v4
 
-      - name: Instalar dependências
+      - name: Instalar dependências básicas
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential clang lld libclang-dev llvm-dev \
-            libgtk-3-dev libdbus-glib-1-dev \
-            libxt-dev libx11-xcb-dev libxcb-shm0-dev \
-            curl python3 python3-pip nasm yasm \
-            libpulse-dev libasound2-dev \
-            zip unzip git mercurial imagemagick \
-            nodejs
+            curl git mercurial python3 python3-pip \
+            imagemagick zip unzip yasm nasm
 
-      - name: Instalar Rust
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Usa um checkout Git real do Firefox 128 em vez de um source tarball
+      # com um .git artificial. Isso permite ao mozversioncontrol/toolchain
+      # do Firefox identificar corretamente o changeset da árvore.
+      - name: Baixar Firefox 128
+        uses: actions/checkout@v4
+        with:
+          repository: mozilla-firefox/firefox
+          ref: FIREFOX_128_0_RELEASE
+          path: firefox-src
+          fetch-depth: 1
+
+      - name: Bootstrap do ambiente Firefox
+        working-directory: firefox-src
+        env:
+          MOZBUILD_STATE_PATH: ${{ runner.temp }}/mozbuild
         run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          python3 ./mach --no-interactive bootstrap --application-choice=browser
 
-      - name: Instalar cbindgen
-        # FIX: sem o binário do cbindgen instalado (não basta corrigir o
-        # cbindgen.toml do source), o mach build quebra na etapa de
-        # bindings Rust<->C++.
-        #
-        # FIX 2 (versão fixa, não "latest"): "cargo install cbindgen" sem
-        # --version sempre baixa a release mais recente do crates.io no
-        # momento em que o job roda. O Firefox 128 foi lançado em jun/2024,
-        # quando a versão "da época" do cbindgen era a 0.26.0. Rodar esse
-        # workflow meses/anos depois puxa uma cbindgen bem mais nova (ex:
-        # 0.29.x), cujo parser interno (baseado no crate `syn`) pode falhar
-        # em analisar sintaxe de um source tão mais antigo — foi exatamente
-        # isso que causou o "Error(expected identifier or integer)" ao
-        # parsear servo/components/style_traits/values.rs: um erro de PARSE,
-        # que acontece antes de qualquer lint ser avaliado, então o
-        # #![allow(unexpected_cfgs)] do passo seguinte nunca poderia ter
-        # corrigido isso (allow só suprime lints, não afeta o parser).
-        # Fixamos a versão contemporânea ao Firefox 128 para evitar esse
-        # descompasso.
+      - name: Copiar mozconfig do Lynx
         run: |
-          export PATH="$HOME/.cargo/bin:$PATH"
-          cargo install cbindgen --version 0.26.0 --locked
+          test -f config/mozconfig
+          cp config/mozconfig firefox-src/.mozconfig
+          cat firefox-src/.mozconfig
 
-      - name: Baixar código fonte do Firefox
-        run: |
-          curl -L "https://archive.mozilla.org/pub/firefox/releases/128.0/source/firefox-128.0.source.tar.xz" \
-            -o firefox-source.tar.xz
-          tar -xJf firefox-source.tar.xz
-          mv firefox-128.0 firefox-src
-          rm firefox-source.tar.xz
-
-      - name: Corrigir bug do cbindgen.toml do Firefox 128
-        run: |
-          cd firefox-src
-          cat > /tmp/fix_toml.py << 'PYEOF'
-          import sys
-          path = sys.argv[1]
-          with open(path, 'r') as f:
-              lines = f.readlines()
-          seen = set()
-          result = []
-          for line in lines:
-              stripped = line.strip()
-              if '=' in stripped and stripped.startswith('"'):
-                  key = stripped.split('=')[0].strip()
-                  if key in seen:
-                      print(f'Removendo duplicata: {stripped}')
-                      continue
-                  seen.add(key)
-              result.append(line)
-          with open(path, 'w') as f:
-              f.writelines(result)
-          print(f'Corrigido: {path}')
-          PYEOF
-          # FIX: NUNCA tocar em third_party/rust/ (ou qualquer outra pasta
-          # vendorizada pelo Cargo) aqui. Cada crate vendorizado tem um
-          # checksum registrado (.cargo-checksum.json), verificado pelo
-          # [source] "directory" do .cargo/config.toml. Editar qualquer
-          # arquivo lá dentro — mesmo reescrevendo com conteúdo idêntico —
-          # invalida esse checksum e o Cargo recusa compilar mais tarde,
-          # com um erro tipo:
-          #   "error: the listed checksum of '.../third_party/rust/<crate>/
-          #    cbindgen.toml' has changed"
-          # O bug de chaves duplicadas que este passo corrige é do código
-          # PRÓPRIO do Firefox (ex: servo/ports/geckolib/cbindgen.toml),
-          # nunca de dependências de terceiros — então excluir third_party/
-          # da busca não deixa nada real sem corrigir.
-          find . -path "./third_party" -prune -o -name "cbindgen.toml" -print | while read toml; do
-            echo "Verificando: $toml"
-            python3 /tmp/fix_toml.py "$toml"
-          done
-
-          # NOTA: isto NÃO corrige o erro "Error(expected identifier or
-          # integer)" do cbindgen ao parsear este arquivo — esse é um erro
-          # de PARSE (sintaxe), que acontece antes de qualquer lint ser
-          # avaliado. #![allow(...)] só suprime lints, então não tem efeito
-          # nenhum sobre um erro de parser. A causa real era a versão do
-          # cbindgen estar desatualizada em relação ao source (corrigido no
-          # passo "Instalar cbindgen" acima, fixando a versão 0.26.0).
-          # Mantemos esta linha como inofensiva/preventiva para avisos reais
-          # de "unexpected_cfgs" que o compilador (rustc, não o cbindgen)
-          # pode emitir mais adiante no build.
-          VALUES_RS="servo/components/style_traits/values.rs"
-          if [ -f "$VALUES_RS" ]; then
-            echo "Corrigindo $VALUES_RS..."
-            sed -i '1s/^/#![allow(unexpected_cfgs)]\n/' "$VALUES_RS"
-            echo "Corrigido!"
-          fi
-
-      - name: Corrigir branding - Nightly para Lynx
-        run: |
-          cd firefox-src
-
-          # Troca Nightly → Lynx Browser APENAS nos arquivos de branding específicos
-          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.ftl 2>/dev/null || true
-          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.properties 2>/dev/null || true
-
-          # Troca Mozilla Firefox → Lynx Browser APENAS em .properties e .ftl de localização
-          # Exclui explicitamente qualquer arquivo .toml, .rs, .py, .cpp, .h, .js
-          find browser/locales browser/branding -type f \( -name "*.properties" -o -name "*.ftl" \) | \
-            xargs sed -i \
-              's/Mozilla Firefox Nightly/Lynx Browser/g;
-               s/Firefox Nightly/Lynx Browser/g;
-               s/Mozilla Firefox/Lynx Browser/g;
-               s/Firefox/Lynx Browser/g;
-               s/Nightly/Lynx Browser/g' 2>/dev/null || true
-
-          # Remove Pocket
-          sed -i 's/pocket//' browser/components/BrowserComponents.manifest || true
-          find . -path "*/pocket*" -name "*.ftl" -exec sed -i 's/pocket//' {} \; || true
-
-          # Corrige user agent para não ser bloqueado pelo Google
-          find . -type f -name "*.js" | xargs grep -l "firefox-b-d\|Firefox/128" 2>/dev/null | head -5 | \
-            xargs sed -i 's/firefox-b-d/lynx-b-d/g' 2>/dev/null || true
-
-      - name: Copiar branding customizado
-        run: |
-          cd firefox-src
-
-          # Converte logo para múltiplos tamanhos necessários
-          convert ../branding/lynx-logo.png -resize 256x256 browser/branding/unofficial/default256.png || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/default256.png
-          convert ../branding/lynx-logo.png -resize 128x128 browser/branding/unofficial/default128.png || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/default128.png
-          convert ../branding/lynx-logo.png -resize 64x64  browser/branding/unofficial/default64.png  || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/default64.png
-          convert ../branding/lynx-logo.png -resize 48x48  browser/branding/unofficial/default48.png  || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/default48.png
-          convert ../branding/lynx-logo.png -resize 32x32  browser/branding/unofficial/default32.png  || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/default32.png
-          convert ../branding/lynx-logo.png -resize 16x16  browser/branding/unofficial/default16.png  || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/default16.png
-
-          # Logo dentro do navegador (about:, menus)
-          convert ../branding/lynx-logo.png -resize 192x192 browser/branding/unofficial/content/about-logo.png || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo.png
-          convert ../branding/lynx-logo.png -resize 384x384 browser/branding/unofficial/content/about-logo@2x.png || \
-            cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo@2x.png
-
-      - name: Copiar mozconfig
-        run: cp config/mozconfig firefox-src/.mozconfig
-
-      - name: Inicializar git dentro do firefox-src
-        # FIX 1: o mach build usa o mozversioncontrol pra listar os arquivos
-        # rastreados (hash_paths -> get_tracked_files_finder) e assim gerar
-        # o digest usado pelo sistema de toolchain. Como firefox-src é extraído
-        # de um tarball DENTRO do checkout do lynx-browser (que já é um repo git),
-        # sem isso o mozversioncontrol acha o .git do repo pai, tenta listar os
-        # arquivos via "git ls-files" e não encontra nada rastreado ali dentro
-        # (nunca foi commitado) -> "did not match anything". Dar um git init
-        # próprio pro firefox-src resolve, porque ele passa a ser reconhecido
-        # como a raiz do repositório para tudo que está dentro da pasta.
-        run: |
-          cd firefox-src
-          git init -q
-          git config user.email "ci@lynx.local"
-          git config user.name "Lynx CI"
-          git add -A
-          git commit -q -m "snapshot firefox-128.0 source" --no-verify
-
-      - name: Configurar remote e evitar download de toolchain oficial
-        # FIX 2: sem nenhum remote configurado, algumas checagens do
-        # mozversioncontrol (ex: git remote get-url origin) quebram com
-        # "No such remote 'origin'". Adicionamos um remote qualquer pra
-        # essas checagens não estourarem — o conteúdo dele não importa,
-        # já que não vamos fazer fetch nele de verdade.
-        #
-        # Além disso, NÃO usamos MOZ_AUTOMATION=1 nem --enable-artifact-builds:
-        # isso faria o build tentar baixar toolchains (clang/rust) pré-compilados
-        # do Taskcluster da Mozilla vinculados a um changeset exato do
-        # mozilla-central — e como este firefox-src é um tarball com um git
-        # falso por cima (não é um clone real do histórico), esse changeset
-        # nunca vai bater, e a busca sempre vai falhar.
-        #
-        # Em vez disso, forçamos o mach a usar o clang e o rust que já
-        # instalamos manualmente nos passos anteriores do workflow.
+      - name: Corrigir branding para Lynx
         working-directory: firefox-src
         run: |
-          git remote add origin https://github.com/mozilla-firefox/firefox.git || true
+          # Mantém a infraestrutura "unofficial" do Firefox para a build
+          # customizada, mas troca os nomes visíveis para Lynx Browser.
+          sed -i 's/Nightly/Lynx Browser/g' \
+            browser/branding/unofficial/locales/en-US/brand.ftl 2>/dev/null || true
 
-          CLANG_BIN=$(command -v clang || true)
-          CLANGXX_BIN=$(command -v clang++ || true)
+          sed -i 's/Nightly/Lynx Browser/g' \
+            browser/branding/unofficial/locales/en-US/brand.properties 2>/dev/null || true
 
-          cat >> .mozconfig << EOF
+          find browser/locales browser/branding -type f \
+            \( -name "*.properties" -o -name "*.ftl" \) -print0 |
+            xargs -0 -r sed -i \
+              -e 's/Mozilla Firefox Nightly/Lynx Browser/g' \
+              -e 's/Firefox Nightly/Lynx Browser/g' \
+              -e 's/Mozilla Firefox/Lynx Browser/g' \
+              -e 's/Firefox/Lynx Browser/g' \
+              -e 's/Nightly/Lynx Browser/g'
 
-          # Usa o clang/rust do sistema em vez de baixar toolchain do Taskcluster
-          ac_add_options --disable-bootstrap
-          ${CLANG_BIN:+export CC=$CLANG_BIN}
-          ${CLANGXX_BIN:+export CXX=$CLANGXX_BIN}
-          EOF
+          # Mantém a função existente de remover Pocket.
+          sed -i 's/pocket//' \
+            browser/components/BrowserComponents.manifest 2>/dev/null || true
 
-          cat .mozconfig
+          find . -path "./third_party" -prune -o \
+            -path "*/pocket*" -name "*.ftl" -print0 |
+            xargs -0 -r sed -i 's/pocket//'
 
-      # FIX 3: o passo "Preparar toolchain" (mach bootstrap) foi removido.
-      # Ele sempre falhava nesse tipo de checkout (tarball + git falso, sem
-      # changeset real do mozilla-central pra bater no Taskcluster) e além
-      # disso contradizia o --disable-bootstrap que acabamos de gravar no
-      # .mozconfig no passo anterior. O toolchain do sistema (clang + Rust +
-      # cbindgen instalados manualmente acima) já é suficiente pro mach build.
+          # Mantém a função existente de usar o UA customizado do Lynx.
+          grep -rlZ -E 'firefox-b-d|Firefox/128' browser 2>/dev/null |
+            xargs -0 -r sed -i \
+              -e 's/firefox-b-d/lynx-b-d/g' \
+              -e 's/Firefox\/128/Lynx\/128/g'
 
-      - name: Compilar
+      - name: Copiar branding customizado
+        working-directory: firefox-src
         run: |
-          cd firefox-src
-          export MOZBUILD_STATE_PATH=$HOME/.mozbuild
+          mkdir -p browser/branding/unofficial/content
+
+          convert ../branding/lynx-logo.png -resize 256x256 \
+            browser/branding/unofficial/default256.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default256.png
+
+          convert ../branding/lynx-logo.png -resize 128x128 \
+            browser/branding/unofficial/default128.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default128.png
+
+          convert ../branding/lynx-logo.png -resize 64x64 \
+            browser/branding/unofficial/default64.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default64.png
+
+          convert ../branding/lynx-logo.png -resize 48x48 \
+            browser/branding/unofficial/default48.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default48.png
+
+          convert ../branding/lynx-logo.png -resize 32x32 \
+            browser/branding/unofficial/default32.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default32.png
+
+          convert ../branding/lynx-logo.png -resize 16x16 \
+            browser/branding/unofficial/default16.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default16.png
+
+          convert ../branding/lynx-logo.png -resize 192x192 \
+            browser/branding/unofficial/content/about-logo.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo.png
+
+          convert ../branding/lynx-logo.png -resize 384x384 \
+            browser/branding/unofficial/content/about-logo@2x.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo@2x.png
+
+      - name: Compilar Lynx
+        working-directory: firefox-src
+        env:
+          MOZBUILD_STATE_PATH: ${{ runner.temp }}/mozbuild
+        run: |
           python3 ./mach build
 
       - name: Empacotar e configurar
+        env:
+          WORK: ${{ github.workspace }}/lynx-build
         run: |
+          set -euo pipefail
+
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+
           cd firefox-src
           python3 ./mach package
 
-          # Localiza o pacote gerado. Dependendo da versão/mozconfig o
-          # Firefox empacota como .tar.bz2 OU .tar.xz — não assumir sempre bz2.
-          PKG=$(find obj-* \( -name "*.tar.bz2" -o -name "*.tar.xz" \) | head -1)
+          PKG=$(find obj-* -type f \
+            \( -name "*.tar.bz2" -o -name "*.tar.xz" \) | head -1)
+
           if [ -z "$PKG" ]; then
-            echo "ERRO: nenhum pacote .tar.bz2/.tar.xz encontrado em obj-*"
+            echo "ERRO: nenhum pacote .tar.bz2/.tar.xz encontrado."
             exit 1
           fi
+
           echo "Pacote encontrado: $PKG"
 
           case "$PKG" in
-            *.tar.xz)  TAR_EXTRACT_FLAGS="-xJf" ;;
-            *.tar.bz2) TAR_EXTRACT_FLAGS="-xjf" ;;
-            *) echo "ERRO: formato de pacote desconhecido: $PKG"; exit 1 ;;
+            *.tar.xz)
+              tar -xJf "$PKG" -C "$WORK"
+              ;;
+            *.tar.bz2)
+              tar -xjf "$PKG" -C "$WORK"
+              ;;
+            *)
+              echo "ERRO: formato desconhecido: $PKG"
+              exit 1
+              ;;
           esac
 
-          # FIX CRÍTICO: o mach package nomeia a pasta interna do pacote com
-          # base no MOZ_APP_NAME real (que continua sendo "firefox", já que
-          # usamos a branding "unofficial" em vez de uma branding nova
-          # chamada "lynx") — nunca assumir que a pasta extraída já se
-          # chama "lynx/". Extraímos num diretório temporário e detectamos
-          # o nome real antes de renomear.
-          EXTRACT_DIR=$(mktemp -d ./extract-XXXXXX)
-          tar $TAR_EXTRACT_FLAGS "$PKG" -C "$EXTRACT_DIR"
+          APP_DIR=$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)
 
-          APP_DIR=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
           if [ -z "$APP_DIR" ]; then
-            echo "ERRO: não encontrei a pasta do app dentro de $EXTRACT_DIR"
+            echo "ERRO: não encontrei a pasta do aplicativo."
             exit 1
           fi
-          echo "Pasta interna do pacote: $APP_DIR"
 
-          rm -rf lynx
-          mv "$APP_DIR" lynx
-          rm -rf "$EXTRACT_DIR"
+          mv "$APP_DIR" "$WORK/LynxBrowser"
 
-          # FIX CRÍTICO (parte 2): o binário executável dentro do pacote
-          # também continua se chamando "firefox" (trocar a branding não
-          # renomeia o binário). O start.sh faz exec "$BASE/lynx", então
-          # criamos um link "lynx" apontando pro binário real.
-          REAL_BIN=$(find lynx -maxdepth 1 -type f -executable ! -name "*.so" | head -1)
-          if [ -z "$REAL_BIN" ]; then
-            echo "ERRO: não encontrei o binário executável dentro de lynx/"
+          cd "$WORK/LynxBrowser"
+
+          # Compatibilidade: se o build gerar "firefox" como binário,
+          # o Lynx usa um link "lynx" sem alterar o binário real.
+          if [ ! -x "./lynx" ] && [ -x "./firefox" ]; then
+            ln -sf firefox lynx
+          fi
+
+          if [ ! -x "./lynx" ]; then
+            echo "ERRO: binário principal do Lynx não encontrado."
+            ls -la
             exit 1
           fi
-          REAL_BIN_NAME=$(basename "$REAL_BIN")
-          echo "Binário real encontrado: $REAL_BIN_NAME"
-          if [ "$REAL_BIN_NAME" != "lynx" ]; then
-            ln -sf "$REAL_BIN_NAME" lynx/lynx
-          fi
 
-          # Cola o home.html dentro da pasta do navegador
-          mkdir -p lynx/lynx-home
-          cp ../config/home.html lynx/lynx-home/home.html
+          # Mantém a home atual do projeto.
+          rm -rf lynx-home
+          mkdir -p lynx-home
+          cp "$GITHUB_WORKSPACE/config/home.html" lynx-home/home.html
 
-          # Cria userChrome.css para remover logo Firefox da interface
-          mkdir -p lynx/defaults/profile/chrome
-          cat > lynx/defaults/profile/chrome/userChrome.css << 'CSS_EOF'
-          /* Remove logo e referências ao Firefox na interface */
-          #PanelUI-menu-button .toolbarbutton-icon {
-              list-style-image: none !important;
+          # Mantém a logo do projeto no pacote.
+          cp "$GITHUB_WORKSPACE/branding/lynx-logo.png" lynx-logo.png
+
+          # Cria New Tab do Lynx. A build é unbranded/unsigned-capable,
+          # então o XPI pode ser instalado por ExtensionSettings.
+          NEWTAB_TMP="$WORK/lynx-newtab"
+          XPI="$WORK/LynxBrowser/lynx-newtab.xpi"
+
+          rm -rf "$NEWTAB_TMP"
+          mkdir -p "$NEWTAB_TMP"
+
+          cat > "$NEWTAB_TMP/manifest.json" <<'MANIFEST_EOF'
+          {
+            "manifest_version": 3,
+            "name": "Lynx New Tab",
+            "version": "1.0.0",
+            "description": "New Tab oficial do Lynx Browser.",
+            "browser_specific_settings": {
+              "gecko": {
+                "id": "lynx-newtab@lynxbrowser.local"
+              }
+            },
+            "chrome_url_overrides": {
+              "newtab": "home.html"
+            }
           }
+          MANIFEST_EOF
+
+          cp "$WORK/LynxBrowser/lynx-home/home.html" "$NEWTAB_TMP/home.html"
+
+          (
+            cd "$NEWTAB_TMP"
+            zip -qr "$XPI" .
+          )
+
+          rm -rf "$NEWTAB_TMP"
+
+          # CSS da interface do Lynx.
+          mkdir -p defaults/profile/chrome
+
+          cat > defaults/profile/chrome/userChrome.css <<'CSS_EOF'
+          /* Lynx Browser */
           #appMenu-protonMainView .panel-header h1,
           #appMenu-protonMainView .panel-header description {
               visibility: collapse !important;
           }
-          /* Remove barra de bookmarks */
+
+          #titlebar {
+              -moz-appearance: none !important;
+          }
+
           #PersonalToolbar {
               display: none !important;
           }
-          /* Remove botão do Pocket */
+
           #save-to-pocket-button {
               display: none !important;
           }
           CSS_EOF
 
-          # Cria userContent.css para dark mode nas páginas internas
-          cat > lynx/defaults/profile/chrome/userContent.css << 'CONTENT_EOF'
+          # Dark mode para páginas internas.
+          cat > defaults/profile/chrome/userContent.css <<'CONTENT_EOF'
           @-moz-document url-prefix("about:") {
               :root {
                   color-scheme: dark !important;
@@ -327,22 +264,50 @@ jobs:
           }
           CONTENT_EOF
 
-          # Cria script de setup que configura policies.json com caminho correto
-          cat > lynx/setup.sh << 'SETUP_EOF'
+          # Setup: cria a policy depois que o pacote for extraído,
+          # pois o caminho absoluto varia conforme o PC do usuário.
+          cat > setup.sh <<'SETUP_EOF'
           #!/usr/bin/env bash
+          set -euo pipefail
+
           BASE="$(cd "$(dirname "$0")" && pwd)"
           DIST="$BASE/distribution"
-          HOME_URL="file://$BASE/lynx-home/home.html"
+
           mkdir -p "$DIST"
-          cat > "$DIST/policies.json" << POLICIES_EOF
+
+          HOME_URL="$(python3 - "$BASE/lynx-home/home.html" <<'PY'
+          import sys
+          from pathlib import Path
+          from urllib.parse import quote
+
+          print("file://" + quote(str(Path(sys.argv[1]).resolve())))
+          PY
+          )"
+
+          XPI_URL="$(python3 - "$BASE/lynx-newtab.xpi" <<'PY'
+          import sys
+          from pathlib import Path
+          from urllib.parse import quote
+
+          print("file://" + quote(str(Path(sys.argv[1]).resolve())))
+          PY
+          )"
+
+          cat > "$DIST/policies.json" <<POLICIES_EOF
           {
             "policies": {
+              "ExtensionSettings": {
+                "lynx-newtab@lynxbrowser.local": {
+                  "installation_mode": "force_installed",
+                  "install_url": "$XPI_URL",
+                  "updates_disabled": true
+                }
+              },
               "Homepage": {
                 "URL": "$HOME_URL",
                 "Locked": true,
                 "StartPage": "homepage"
               },
-              "NewTabPage": "$HOME_URL",
               "OverrideFirstRunPage": "",
               "OverridePostUpdatePage": "",
               "DisableFirefoxStudies": true,
@@ -353,55 +318,104 @@ jobs:
             }
           }
           POLICIES_EOF
-          echo "Lynx Browser configurado!"
           SETUP_EOF
-          chmod +x lynx/setup.sh
 
-          # Cria launcher principal
-          cat > lynx/start.sh << 'START_EOF'
+          chmod +x setup.sh
+
+          # Launcher principal.
+          cat > start.sh <<'START_EOF'
           #!/usr/bin/env bash
+          set -euo pipefail
+
           BASE="$(cd "$(dirname "$0")" && pwd)"
+
           bash "$BASE/setup.sh"
 
           PROFILE="$BASE/profile"
           mkdir -p "$PROFILE/chrome"
 
-          # Copia userChrome e userContent
-          cp "$BASE/defaults/profile/chrome/userChrome.css" "$PROFILE/chrome/" 2>/dev/null || true
-          cp "$BASE/defaults/profile/chrome/userContent.css" "$PROFILE/chrome/" 2>/dev/null || true
+          cp "$BASE/defaults/profile/chrome/userChrome.css" \
+             "$PROFILE/chrome/userChrome.css"
 
-          cat > "$PROFILE/user.js" << USERJS_EOF
+          cp "$BASE/defaults/profile/chrome/userContent.css" \
+             "$PROFILE/chrome/userContent.css"
+
+          cat > "$PROFILE/user.js" <<'USERJS_EOF'
           /* Lynx Browser */
+
+          user_pref("xpinstall.signatures.required", false);
+
           user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
           user_pref("extensions.activeThemeID", "firefox-compact-dark@mozilla.org");
+
           user_pref("browser.shell.checkDefaultBrowser", false);
           user_pref("browser.warnOnQuit", false);
           user_pref("browser.sessionstore.resume_from_crash", false);
+
           user_pref("startup.homepage_welcome_url", "");
           user_pref("startup.homepage_welcome_url.additional", "");
           user_pref("startup.homepage_override_url", "");
           user_pref("browser.startup.upgradeDialog.enabled", false);
           user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+
           user_pref("network.trr.mode", 2);
           user_pref("network.trr.uri", "https://cloudflare-dns.com/dns-query");
+          user_pref("network.trr.bootstrapAddress", "1.1.1.1");
+
           user_pref("privacy.trackingprotection.enabled", true);
+          user_pref("privacy.trackingprotection.pbmode.enabled", true);
+          user_pref("privacy.trackingprotection.socialtracking.enabled", true);
+          user_pref("privacy.partition.network_state", true);
+          user_pref("privacy.partition.network_state.ocsp_cache", true);
+
           user_pref("media.peerconnection.enabled", false);
+          user_pref("dom.battery.enabled", false);
+          user_pref("browser.send_pings", false);
+
           user_pref("extensions.pocket.enabled", false);
           user_pref("browser.toolbars.bookmarks.visibility", "never");
           user_pref("intl.locale.requested", "pt-BR");
           user_pref("general.useragent.override", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Lynx/128.0");
           USERJS_EOF
 
+          HOME_URL="$(python3 - "$BASE/lynx-home/home.html" <<'PY'
+          import sys
+          from pathlib import Path
+          from urllib.parse import quote
+
+          print("file://" + quote(str(Path(sys.argv[1]).resolve())))
+          PY
+          )"
+
           exec "$BASE/lynx" \
             --no-remote \
             --profile "$PROFILE" \
-            "file://$BASE/lynx-home/home.html" \
+            "$HOME_URL" \
             "$@"
           START_EOF
-          chmod +x lynx/start.sh
 
-          # Reempacota tudo
-          tar -cjf ../lynx-browser-linux-x64.tar.bz2 lynx/
+          chmod +x start.sh
+
+          cat > "Lynx Browser.desktop" <<'DESKTOP_EOF'
+          [Desktop Entry]
+          Version=1.0
+          Type=Application
+          Name=Lynx Browser
+          GenericName=Web Browser
+          Comment=Lynx Browser
+          Exec=./start.sh
+          Icon=./lynx-logo.png
+          Terminal=false
+          StartupNotify=true
+          StartupWMClass=Lynx
+          Categories=Network;WebBrowser;
+          Keywords=Internet;Browser;Lynx;
+          DESKTOP_EOF
+
+          # Garante que o release final tenha a estrutura desejada.
+          find . -maxdepth 1 -type f -printf '%f\n' | sort
+
+          tar -cjf "$GITHUB_WORKSPACE/lynx-browser-linux-x64.tar.bz2" LynxBrowser
 
       - name: Upload do artefato
         uses: actions/upload-artifact@v4
@@ -417,5 +431,6 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: Lynx Browser v1.0.${{ github.run_number }}
           files: lynx-browser-linux-x64.tar.bz2
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
