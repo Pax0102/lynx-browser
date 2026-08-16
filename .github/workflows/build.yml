@@ -28,7 +28,7 @@ jobs:
           curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.76.0
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           source "$HOME/.cargo/env"
-          cargo install cbindgen --version 0.26.0 --force
+          cargo install cbindgen --version 0.24.3 --force
 
       - name: Baixar código fonte do Firefox
         run: |
