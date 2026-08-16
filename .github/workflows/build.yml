@@ -39,29 +39,29 @@ jobs:
       - name: Corrigir bug do cbindgen.toml do Firefox 128
         run: |
           cd firefox-src
-          # Encontra todos os cbindgen.toml e remove chaves duplicadas
+          cat > /tmp/fix_toml.py << 'PYEOF'
+          import sys
+          path = sys.argv[1]
+          with open(path, 'r') as f:
+              lines = f.readlines()
+          seen = set()
+          result = []
+          for line in lines:
+              stripped = line.strip()
+              if '=' in stripped and stripped.startswith('"'):
+                  key = stripped.split('=')[0].strip()
+                  if key in seen:
+                      print(f'Removendo duplicata: {stripped}')
+                      continue
+                  seen.add(key)
+              result.append(line)
+          with open(path, 'w') as f:
+              f.writelines(result)
+          print(f'Corrigido: {path}')
+          PYEOF
           find . -name "cbindgen.toml" | while read toml; do
             echo "Verificando: $toml"
-            python3 -c "
-import sys
-path = sys.argv[1]
-with open(path, 'r') as f:
-    lines = f.readlines()
-seen = set()
-result = []
-for line in lines:
-    stripped = line.strip()
-    if '=' in stripped and stripped.startswith('\"'):
-        key = stripped.split('=')[0].strip()
-        if key in seen:
-            print(f'Removendo duplicata: {stripped}')
-            continue
-        seen.add(key)
-    result.append(line)
-with open(path, 'w') as f:
-    f.writelines(result)
-print(f'Corrigido: {path}')
-" "$toml"
+            python3 /tmp/fix_toml.py "$toml"
           done
 
       - name: Corrigir branding - Nightly para Lynx
