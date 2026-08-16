@@ -17,7 +17,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential libgtk-3-dev libdbus-glib-1-dev \
+            build-essential clang lld libclang-dev llvm-dev \
+            libgtk-3-dev libdbus-glib-1-dev \
             libxt-dev libx11-xcb-dev libxcb-shm0-dev \
             curl python3 python3-pip nasm yasm \
             libpulse-dev libasound2-dev \
@@ -128,7 +129,7 @@ jobs:
         run: cp config/mozconfig firefox-src/.mozconfig
 
       - name: Inicializar git dentro do firefox-src
-        # FIX: o mach build usa o mozversioncontrol pra listar os arquivos
+        # FIX 1: o mach build usa o mozversioncontrol pra listar os arquivos
         # rastreados (hash_paths -> get_tracked_files_finder) e assim gerar
         # o digest usado pelo sistema de toolchain. Como firefox-src é extraído
         # de um tarball DENTRO do checkout do lynx-browser (que já é um repo git),
@@ -145,11 +146,44 @@ jobs:
           git add -A
           git commit -q -m "snapshot firefox-128.0 source" --no-verify
 
+      - name: Configurar remote e evitar download de toolchain oficial
+        # FIX 2: sem nenhum remote configurado, algumas checagens do
+        # mozversioncontrol (ex: git remote get-url origin) quebram com
+        # "No such remote 'origin'". Adicionamos um remote qualquer pra
+        # essas checagens não estourarem — o conteúdo dele não importa,
+        # já que não vamos fazer fetch nele de verdade.
+        #
+        # Além disso, NÃO usamos MOZ_AUTOMATION=1 nem --enable-artifact-builds:
+        # isso faria o build tentar baixar toolchains (clang/rust) pré-compilados
+        # do Taskcluster da Mozilla vinculados a um changeset exato do
+        # mozilla-central — e como este firefox-src é um tarball com um git
+        # falso por cima (não é um clone real do histórico), esse changeset
+        # nunca vai bater, e a busca sempre vai falhar.
+        #
+        # Em vez disso, forçamos o mach a usar o clang e o rust que já
+        # instalamos manualmente nos passos anteriores do workflow.
+        working-directory: firefox-src
+        run: |
+          git remote add origin https://github.com/mozilla-firefox/firefox.git || true
+
+          CLANG_BIN=$(command -v clang || true)
+          CLANGXX_BIN=$(command -v clang++ || true)
+
+          cat >> .mozconfig << EOF
+
+          # Usa o clang/rust do sistema em vez de baixar toolchain do Taskcluster
+          ac_add_options --disable-bootstrap
+          ${CLANG_BIN:+export CC=$CLANG_BIN}
+          ${CLANGXX_BIN:+export CXX=$CLANGXX_BIN}
+          EOF
+
+          cat .mozconfig
+
       - name: Preparar toolchain
         working-directory: firefox-src
         run: |
           export MOZBUILD_STATE_PATH=$HOME/.mozbuild
-          python3 ./mach bootstrap --application-choice=browser
+          python3 ./mach bootstrap --application-choice=browser --no-interactive
 
       - name: Compilar
         run: |
