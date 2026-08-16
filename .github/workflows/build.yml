@@ -39,27 +39,30 @@ jobs:
       - name: Corrigir bug do cbindgen.toml do Firefox 128
         run: |
           cd firefox-src
-          # O Firefox 128.0 tem um bug no cbindgen.toml com chave duplicada "Keyframe"
-          # Precisamos remover a linha duplicada
-          python3 -c "
-          import re
-          path = 'layout/style/cbindgen.toml'
-          with open(path, 'r') as f:
-              content = f.read()
-          lines = content.split('\n')
-          seen = set()
-          result = []
-          for line in lines:
-              stripped = line.strip()
-              if stripped.startswith('\"Keyframe\"'):
-                  if stripped in seen:
-                      continue
-                  seen.add(stripped)
-              result.append(line)
-          with open(path, 'w') as f:
-              f.write('\n'.join(result))
-          print('cbindgen.toml corrigido!')
-          "
+          # Encontra todos os cbindgen.toml e remove chaves duplicadas
+          find . -name "cbindgen.toml" | while read toml; do
+            echo "Verificando: $toml"
+            python3 -c "
+import sys
+path = sys.argv[1]
+with open(path, 'r') as f:
+    lines = f.readlines()
+seen = set()
+result = []
+for line in lines:
+    stripped = line.strip()
+    if '=' in stripped and stripped.startswith('\"'):
+        key = stripped.split('=')[0].strip()
+        if key in seen:
+            print(f'Removendo duplicata: {stripped}')
+            continue
+        seen.add(key)
+    result.append(line)
+with open(path, 'w') as f:
+    f.writelines(result)
+print(f'Corrigido: {path}')
+" "$toml"
+          done
 
       - name: Corrigir branding - Nightly para Lynx
         run: |
