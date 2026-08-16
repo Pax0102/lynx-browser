@@ -21,14 +21,12 @@ jobs:
             libxt-dev libx11-xcb-dev libxcb-shm0-dev \
             curl python3 python3-pip nasm yasm \
             libpulse-dev libasound2-dev \
-            zip unzip git mercurial
+            zip unzip git mercurial imagemagick
 
       - name: Instalar Rust
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source "$HOME/.cargo/env"
-          cargo install cbindgen --version 0.26.0 --force
 
       - name: Baixar código fonte do Firefox
         run: |
@@ -38,42 +36,62 @@ jobs:
           mv firefox-128.0 firefox-src
           rm firefox-source.tar.xz
 
-      - name: Aplicar patches de renomeação
+      - name: Corrigir branding - Nightly para Lynx
         run: |
           cd firefox-src
-          # Renomeia Firefox → Lynx em strings principais
-          find . -type f \( -name "*.properties" -o -name "*.ftl" -o -name "*.ini" \) | \
-            xargs grep -l "Firefox" | \
-            xargs sed -i 's/Mozilla Firefox/Lynx Browser/g; s/Firefox/Lynx/g'
-          
-          # Renomeia em arquivos de configuração
-          sed -i 's/Firefox/Lynx/g' browser/config/version.txt || true
-          
-          # Aplica patches customizados se existirem
-          if [ -f "../patches/branding.patch" ]; then
-            patch -p1 < ../patches/branding.patch || true
-          fi
+
+          # Troca Nightly → Lynx Browser nos arquivos de branding
+          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.ftl || true
+          sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.properties || true
+          sed -i 's/nightly/lynx/g' browser/branding/unofficial/configure.sh || true
+
+          # Troca Mozilla Firefox → Lynx Browser em todas as strings da interface
+          find . -type f \( -name "*.properties" -o -name "*.ftl" -o -name "*.ini" -o -name "*.dtd" \) | \
+            xargs grep -l "Firefox\|Nightly\|Mozilla" 2>/dev/null | \
+            xargs sed -i \
+              's/Mozilla Firefox Nightly/Lynx Browser/g;
+               s/Firefox Nightly/Lynx Browser/g;
+               s/Mozilla Firefox/Lynx Browser/g;
+               s/Firefox/Lynx Browser/g;
+               s/Nightly/Lynx Browser/g' 2>/dev/null || true
+
+          # Garante que o nome do app está correto
+          echo "Lynx Browser" > browser/branding/unofficial/locales/en-US/brand.properties || true
+
+          # Remove Pocket
+          sed -i 's/pocket//' browser/components/BrowserComponents.manifest || true
+          find . -path "*/pocket*" -name "*.ftl" -exec sed -i 's/pocket//' {} \; || true
+
+          # Corrige user agent para não ser bloqueado pelo Google
+          find . -type f -name "*.js" | xargs grep -l "firefox-b-d\|Firefox/128" 2>/dev/null | head -5 | \
+            xargs sed -i 's/firefox-b-d/lynx-b-d/g' 2>/dev/null || true
 
       - name: Copiar branding customizado
         run: |
           cd firefox-src
-          # Copia logo para os locais de branding
-          cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo@2x.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/default256.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/default128.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/default64.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/default48.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/default32.png
-          cp ../branding/lynx-logo.png browser/branding/unofficial/default16.png
+
+          # Converte logo para múltiplos tamanhos necessários
+          convert ../branding/lynx-logo.png -resize 256x256 browser/branding/unofficial/default256.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default256.png
+          convert ../branding/lynx-logo.png -resize 128x128 browser/branding/unofficial/default128.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default128.png
+          convert ../branding/lynx-logo.png -resize 64x64  browser/branding/unofficial/default64.png  || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default64.png
+          convert ../branding/lynx-logo.png -resize 48x48  browser/branding/unofficial/default48.png  || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default48.png
+          convert ../branding/lynx-logo.png -resize 32x32  browser/branding/unofficial/default32.png  || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default32.png
+          convert ../branding/lynx-logo.png -resize 16x16  browser/branding/unofficial/default16.png  || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/default16.png
+
+          # Logo dentro do navegador (about:, menus)
+          convert ../branding/lynx-logo.png -resize 192x192 browser/branding/unofficial/content/about-logo.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo.png
+          convert ../branding/lynx-logo.png -resize 384x384 browser/branding/unofficial/content/about-logo@2x.png || \
+            cp ../branding/lynx-logo.png browser/branding/unofficial/content/about-logo@2x.png
 
       - name: Copiar mozconfig
-        run: |
-          cp config/mozconfig firefox-src/.mozconfig
-
-      - name: Copiar home.html
-        run: |
-          cp config/home.html firefox-src/browser/extensions/newtab/prerendered/activity-stream-noscripts.html || true
+        run: cp config/mozconfig firefox-src/.mozconfig
 
       - name: Compilar
         run: |
@@ -82,12 +100,126 @@ jobs:
           python3 ./mach bootstrap --application-choice=browser --no-interactive || true
           python3 ./mach build
 
-      - name: Empacotar
+      - name: Empacotar e configurar
         run: |
           cd firefox-src
           python3 ./mach package
-          # Move o pacote gerado
-          find obj-* -name "*.tar.bz2" -exec cp {} ../lynx-browser-linux-x64.tar.bz2 \;
+
+          # Extrai o pacote gerado
+          PKG=$(find obj-* -name "*.tar.bz2" | head -1)
+          tar -xjf "$PKG"
+
+          # Cola o home.html dentro da pasta do navegador
+          mkdir -p lynx/lynx-home
+          cp ../config/home.html lynx/lynx-home/home.html
+
+          # Cria userChrome.css para remover logo Firefox da interface
+          mkdir -p lynx/defaults/profile/chrome
+          cat > lynx/defaults/profile/chrome/userChrome.css << 'CSS_EOF'
+          /* Remove logo e referências ao Firefox na interface */
+          #PanelUI-menu-button .toolbarbutton-icon {
+              list-style-image: none !important;
+          }
+          #appMenu-protonMainView .panel-header h1,
+          #appMenu-protonMainView .panel-header description {
+              visibility: collapse !important;
+          }
+          /* Remove barra de bookmarks */
+          #PersonalToolbar {
+              display: none !important;
+          }
+          /* Remove botão do Pocket */
+          #save-to-pocket-button {
+              display: none !important;
+          }
+          CSS_EOF
+
+          # Cria userContent.css para dark mode nas páginas internas
+          cat > lynx/defaults/profile/chrome/userContent.css << 'CONTENT_EOF'
+          @-moz-document url-prefix("about:") {
+              :root {
+                  color-scheme: dark !important;
+                  background: #050506 !important;
+                  color: #eef1f8 !important;
+              }
+          }
+          CONTENT_EOF
+
+          # Cria script de setup que configura policies.json com caminho correto
+          cat > lynx/setup.sh << 'SETUP_EOF'
+          #!/usr/bin/env bash
+          BASE="$(cd "$(dirname "$0")" && pwd)"
+          DIST="$BASE/distribution"
+          HOME_URL="file://$BASE/lynx-home/home.html"
+          mkdir -p "$DIST"
+          cat > "$DIST/policies.json" << POLICIES_EOF
+          {
+            "policies": {
+              "Homepage": {
+                "URL": "$HOME_URL",
+                "Locked": true,
+                "StartPage": "homepage"
+              },
+              "NewTabPage": "$HOME_URL",
+              "OverrideFirstRunPage": "",
+              "OverridePostUpdatePage": "",
+              "DisableFirefoxStudies": true,
+              "DisableTelemetry": true,
+              "DisablePocket": true,
+              "DisplayBookmarksToolbar": "never",
+              "DisplayMenuBar": "default-off"
+            }
+          }
+          POLICIES_EOF
+          echo "Lynx Browser configurado!"
+          SETUP_EOF
+          chmod +x lynx/setup.sh
+
+          # Cria launcher principal
+          cat > lynx/start.sh << 'START_EOF'
+          #!/usr/bin/env bash
+          BASE="$(cd "$(dirname "$0")" && pwd)"
+          bash "$BASE/setup.sh"
+
+          PROFILE="$BASE/profile"
+          mkdir -p "$PROFILE/chrome"
+
+          # Copia userChrome e userContent
+          cp "$BASE/defaults/profile/chrome/userChrome.css" "$PROFILE/chrome/" 2>/dev/null || true
+          cp "$BASE/defaults/profile/chrome/userContent.css" "$PROFILE/chrome/" 2>/dev/null || true
+
+          cat > "$PROFILE/user.js" << USERJS_EOF
+          /* Lynx Browser */
+          user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+          user_pref("extensions.activeThemeID", "firefox-compact-dark@mozilla.org");
+          user_pref("browser.shell.checkDefaultBrowser", false);
+          user_pref("browser.warnOnQuit", false);
+          user_pref("browser.sessionstore.resume_from_crash", false);
+          user_pref("startup.homepage_welcome_url", "");
+          user_pref("startup.homepage_welcome_url.additional", "");
+          user_pref("startup.homepage_override_url", "");
+          user_pref("browser.startup.upgradeDialog.enabled", false);
+          user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+          user_pref("network.trr.mode", 2);
+          user_pref("network.trr.uri", "https://cloudflare-dns.com/dns-query");
+          user_pref("privacy.trackingprotection.enabled", true);
+          user_pref("media.peerconnection.enabled", false);
+          user_pref("extensions.pocket.enabled", false);
+          user_pref("browser.toolbars.bookmarks.visibility", "never");
+          user_pref("intl.locale.requested", "pt-BR");
+          user_pref("general.useragent.override", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Lynx/128.0");
+          USERJS_EOF
+
+          exec "$BASE/lynx" \
+            --no-remote \
+            --profile "$PROFILE" \
+            "file://$BASE/lynx-home/home.html" \
+            "$@"
+          START_EOF
+          chmod +x lynx/start.sh
+
+          # Reempacota tudo
+          tar -cjf ../lynx-browser-linux-x64.tar.bz2 lynx/
 
       - name: Upload do artefato
         uses: actions/upload-artifact@v4
