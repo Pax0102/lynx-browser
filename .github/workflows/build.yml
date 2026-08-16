@@ -25,10 +25,8 @@ jobs:
 
       - name: Instalar Rust
         run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.76.0
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source "$HOME/.cargo/env"
-          cargo install cbindgen --version 0.24.3 --force
 
       - name: Baixar código fonte do Firefox
         run: |
@@ -65,6 +63,16 @@ jobs:
             echo "Verificando: $toml"
             python3 /tmp/fix_toml.py "$toml"
           done
+
+          # Corrige o values.rs que quebra o cbindgen moderno
+          # O problema é o uso de `#[cfg(..)]` em posições não suportadas
+          VALUES_RS="servo/components/style_traits/values.rs"
+          if [ -f "$VALUES_RS" ]; then
+            echo "Corrigindo $VALUES_RS..."
+            # Adiciona #![allow(unexpected_cfgs)] no topo do arquivo
+            sed -i '1s/^/#![allow(unexpected_cfgs)]\n/' "$VALUES_RS"
+            echo "Corrigido!"
+          fi
 
       - name: Corrigir branding - Nightly para Lynx
         run: |
