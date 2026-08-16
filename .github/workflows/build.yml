@@ -36,6 +36,31 @@ jobs:
           mv firefox-128.0 firefox-src
           rm firefox-source.tar.xz
 
+      - name: Corrigir bug do cbindgen.toml do Firefox 128
+        run: |
+          cd firefox-src
+          # O Firefox 128.0 tem um bug no cbindgen.toml com chave duplicada "Keyframe"
+          # Precisamos remover a linha duplicada
+          python3 -c "
+          import re
+          path = 'layout/style/cbindgen.toml'
+          with open(path, 'r') as f:
+              content = f.read()
+          lines = content.split('\n')
+          seen = set()
+          result = []
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith('\"Keyframe\"'):
+                  if stripped in seen:
+                      continue
+                  seen.add(stripped)
+              result.append(line)
+          with open(path, 'w') as f:
+              f.write('\n'.join(result))
+          print('cbindgen.toml corrigido!')
+          "
+
       - name: Corrigir branding - Nightly para Lynx
         run: |
           cd firefox-src
