@@ -127,12 +127,19 @@ jobs:
       - name: Copiar mozconfig
         run: cp config/mozconfig firefox-src/.mozconfig
 
+      - name: Preparar toolchain
+        working-directory: firefox-src
+        run: |
+          export MOZBUILD_STATE_PATH=$HOME/.mozbuild
+          python3 ./mach bootstrap --application-choice=browser
+
       - name: Compilar
         run: |
           cd firefox-src
           export MOZBUILD_STATE_PATH=$HOME/.mozbuild
-          python3 ./mach bootstrap --application-choice=browser --no-interactive || true
+          python3 ./mach bootstrap --application-choice=browser
           python3 ./mach build
+
 
       - name: Empacotar e configurar
         run: |
