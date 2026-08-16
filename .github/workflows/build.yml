@@ -34,9 +34,24 @@ jobs:
         # FIX: sem o binário do cbindgen instalado (não basta corrigir o
         # cbindgen.toml do source), o mach build quebra na etapa de
         # bindings Rust<->C++.
+        #
+        # FIX 2 (versão fixa, não "latest"): "cargo install cbindgen" sem
+        # --version sempre baixa a release mais recente do crates.io no
+        # momento em que o job roda. O Firefox 128 foi lançado em jun/2024,
+        # quando a versão "da época" do cbindgen era a 0.26.0. Rodar esse
+        # workflow meses/anos depois puxa uma cbindgen bem mais nova (ex:
+        # 0.29.x), cujo parser interno (baseado no crate `syn`) pode falhar
+        # em analisar sintaxe de um source tão mais antigo — foi exatamente
+        # isso que causou o "Error(expected identifier or integer)" ao
+        # parsear servo/components/style_traits/values.rs: um erro de PARSE,
+        # que acontece antes de qualquer lint ser avaliado, então o
+        # #![allow(unexpected_cfgs)] do passo seguinte nunca poderia ter
+        # corrigido isso (allow só suprime lints, não afeta o parser).
+        # Fixamos a versão contemporânea ao Firefox 128 para evitar esse
+        # descompasso.
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          cargo install cbindgen --locked
+          cargo install cbindgen --version 0.26.0 --locked
 
       - name: Baixar código fonte do Firefox
         run: |
@@ -74,12 +89,19 @@ jobs:
             python3 /tmp/fix_toml.py "$toml"
           done
 
-          # Corrige o values.rs que quebra o cbindgen moderno
-          # O problema é o uso de `#[cfg(..)]` em posições não suportadas
+          # NOTA: isto NÃO corrige o erro "Error(expected identifier or
+          # integer)" do cbindgen ao parsear este arquivo — esse é um erro
+          # de PARSE (sintaxe), que acontece antes de qualquer lint ser
+          # avaliado. #![allow(...)] só suprime lints, então não tem efeito
+          # nenhum sobre um erro de parser. A causa real era a versão do
+          # cbindgen estar desatualizada em relação ao source (corrigido no
+          # passo "Instalar cbindgen" acima, fixando a versão 0.26.0).
+          # Mantemos esta linha como inofensiva/preventiva para avisos reais
+          # de "unexpected_cfgs" que o compilador (rustc, não o cbindgen)
+          # pode emitir mais adiante no build.
           VALUES_RS="servo/components/style_traits/values.rs"
           if [ -f "$VALUES_RS" ]; then
             echo "Corrigindo $VALUES_RS..."
-            # Adiciona #![allow(unexpected_cfgs)] no topo do arquivo
             sed -i '1s/^/#![allow(unexpected_cfgs)]\n/' "$VALUES_RS"
             echo "Corrigido!"
           fi
