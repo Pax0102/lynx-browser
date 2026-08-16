@@ -25,7 +25,7 @@ jobs:
 
       - name: Instalar Rust
         run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.76.0
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Baixar código fonte do Firefox
