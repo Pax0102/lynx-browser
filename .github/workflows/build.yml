@@ -22,12 +22,21 @@ jobs:
             libxt-dev libx11-xcb-dev libxcb-shm0-dev \
             curl python3 python3-pip nasm yasm \
             libpulse-dev libasound2-dev \
-            zip unzip git mercurial imagemagick
+            zip unzip git mercurial imagemagick \
+            nodejs
 
       - name: Instalar Rust
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Instalar cbindgen
+        # FIX: sem o binário do cbindgen instalado (não basta corrigir o
+        # cbindgen.toml do source), o mach build quebra na etapa de
+        # bindings Rust<->C++.
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install cbindgen --locked
 
       - name: Baixar código fonte do Firefox
         run: |
@@ -179,11 +188,12 @@ jobs:
 
           cat .mozconfig
 
-      - name: Preparar toolchain
-        working-directory: firefox-src
-        run: |
-          export MOZBUILD_STATE_PATH=$HOME/.mozbuild
-          python3 ./mach bootstrap --application-choice=browser
+      # FIX 3: o passo "Preparar toolchain" (mach bootstrap) foi removido.
+      # Ele sempre falhava nesse tipo de checkout (tarball + git falso, sem
+      # changeset real do mozilla-central pra bater no Taskcluster) e além
+      # disso contradizia o --disable-bootstrap que acabamos de gravar no
+      # .mozconfig no passo anterior. O toolchain do sistema (clang + Rust +
+      # cbindgen instalados manualmente acima) já é suficiente pro mach build.
 
       - name: Compilar
         run: |
@@ -196,9 +206,55 @@ jobs:
           cd firefox-src
           python3 ./mach package
 
-          # Extrai o pacote gerado
-          PKG=$(find obj-* -name "*.tar.bz2" | head -1)
-          tar -xjf "$PKG"
+          # Localiza o pacote gerado. Dependendo da versão/mozconfig o
+          # Firefox empacota como .tar.bz2 OU .tar.xz — não assumir sempre bz2.
+          PKG=$(find obj-* \( -name "*.tar.bz2" -o -name "*.tar.xz" \) | head -1)
+          if [ -z "$PKG" ]; then
+            echo "ERRO: nenhum pacote .tar.bz2/.tar.xz encontrado em obj-*"
+            exit 1
+          fi
+          echo "Pacote encontrado: $PKG"
+
+          case "$PKG" in
+            *.tar.xz)  TAR_EXTRACT_FLAGS="-xJf" ;;
+            *.tar.bz2) TAR_EXTRACT_FLAGS="-xjf" ;;
+            *) echo "ERRO: formato de pacote desconhecido: $PKG"; exit 1 ;;
+          esac
+
+          # FIX CRÍTICO: o mach package nomeia a pasta interna do pacote com
+          # base no MOZ_APP_NAME real (que continua sendo "firefox", já que
+          # usamos a branding "unofficial" em vez de uma branding nova
+          # chamada "lynx") — nunca assumir que a pasta extraída já se
+          # chama "lynx/". Extraímos num diretório temporário e detectamos
+          # o nome real antes de renomear.
+          EXTRACT_DIR=$(mktemp -d ./extract-XXXXXX)
+          tar $TAR_EXTRACT_FLAGS "$PKG" -C "$EXTRACT_DIR"
+
+          APP_DIR=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "ERRO: não encontrei a pasta do app dentro de $EXTRACT_DIR"
+            exit 1
+          fi
+          echo "Pasta interna do pacote: $APP_DIR"
+
+          rm -rf lynx
+          mv "$APP_DIR" lynx
+          rm -rf "$EXTRACT_DIR"
+
+          # FIX CRÍTICO (parte 2): o binário executável dentro do pacote
+          # também continua se chamando "firefox" (trocar a branding não
+          # renomeia o binário). O start.sh faz exec "$BASE/lynx", então
+          # criamos um link "lynx" apontando pro binário real.
+          REAL_BIN=$(find lynx -maxdepth 1 -type f -executable ! -name "*.so" | head -1)
+          if [ -z "$REAL_BIN" ]; then
+            echo "ERRO: não encontrei o binário executável dentro de lynx/"
+            exit 1
+          fi
+          REAL_BIN_NAME=$(basename "$REAL_BIN")
+          echo "Binário real encontrado: $REAL_BIN_NAME"
+          if [ "$REAL_BIN_NAME" != "lynx" ]; then
+            ln -sf "$REAL_BIN_NAME" lynx/lynx
+          fi
 
           # Cola o home.html dentro da pasta do navegador
           mkdir -p lynx/lynx-home
