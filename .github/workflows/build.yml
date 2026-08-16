@@ -127,6 +127,24 @@ jobs:
       - name: Copiar mozconfig
         run: cp config/mozconfig firefox-src/.mozconfig
 
+      - name: Inicializar git dentro do firefox-src
+        # FIX: o mach build usa o mozversioncontrol pra listar os arquivos
+        # rastreados (hash_paths -> get_tracked_files_finder) e assim gerar
+        # o digest usado pelo sistema de toolchain. Como firefox-src é extraído
+        # de um tarball DENTRO do checkout do lynx-browser (que já é um repo git),
+        # sem isso o mozversioncontrol acha o .git do repo pai, tenta listar os
+        # arquivos via "git ls-files" e não encontra nada rastreado ali dentro
+        # (nunca foi commitado) -> "did not match anything". Dar um git init
+        # próprio pro firefox-src resolve, porque ele passa a ser reconhecido
+        # como a raiz do repositório para tudo que está dentro da pasta.
+        run: |
+          cd firefox-src
+          git init -q
+          git config user.email "ci@lynx.local"
+          git config user.name "Lynx CI"
+          git add -A
+          git commit -q -m "snapshot firefox-128.0 source" --no-verify
+
       - name: Preparar toolchain
         working-directory: firefox-src
         run: |
@@ -137,9 +155,7 @@ jobs:
         run: |
           cd firefox-src
           export MOZBUILD_STATE_PATH=$HOME/.mozbuild
-          python3 ./mach bootstrap --application-choice=browser
           python3 ./mach build
-
 
       - name: Empacotar e configurar
         run: |
