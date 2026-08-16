@@ -45,8 +45,10 @@ jobs:
           sed -i 's/Nightly/Lynx Browser/g' browser/branding/unofficial/locales/en-US/brand.properties || true
           sed -i 's/nightly/lynx/g' browser/branding/unofficial/configure.sh || true
 
-          # Troca Mozilla Firefox → Lynx Browser em todas as strings da interface
+          # Troca Mozilla Firefox → Lynx Browser APENAS em arquivos de string/localização
+          # NUNCA mexe em .rs, .toml, .py, .cpp, .h, .js (código fonte)
           find . -type f \( -name "*.properties" -o -name "*.ftl" -o -name "*.ini" -o -name "*.dtd" \) | \
+            grep -v "node_modules\|third_party\|\.cargo" | \
             xargs grep -l "Firefox\|Nightly\|Mozilla" 2>/dev/null | \
             xargs sed -i \
               's/Mozilla Firefox Nightly/Lynx Browser/g;
@@ -54,9 +56,6 @@ jobs:
                s/Mozilla Firefox/Lynx Browser/g;
                s/Firefox/Lynx Browser/g;
                s/Nightly/Lynx Browser/g' 2>/dev/null || true
-
-          # Garante que o nome do app está correto
-          echo "Lynx Browser" > browser/branding/unofficial/locales/en-US/brand.properties || true
 
           # Remove Pocket
           sed -i 's/pocket//' browser/components/BrowserComponents.manifest || true
