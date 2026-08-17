@@ -544,7 +544,7 @@ jobs:
           Keywords=Internet;Browser;Lynx;
           DESKTOP_EOF
 
-          tar -cjf "$GITHUB_WORKSPACE/lynx-browser-linux-x64.tar.bz2" LynxBrowser
+          tar -cjf "$GITHUB_WORKSPACE/lynx-browser-linux-x64.tar.bz2" -C "$WORK" LynxBrowser
 
       - name: Upload do artefato
         uses: actions/upload-artifact@v4
