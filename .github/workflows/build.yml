@@ -132,6 +132,10 @@ jobs:
           ac_add_options --with-clang-path=/usr/bin/clang-18
           ac_add_options --with-libclang-path=/usr/lib/llvm-18/lib
 
+          # Canal de release: remove o selo "Nightly" da New Tab
+          export MOZ_UPDATE_CHANNEL=release
+          ac_add_options --enable-release
+
           export PATH="$HOME/.cargo/bin:$PATH"
           export CC=/usr/bin/clang-18
           export CXX=/usr/bin/clang++-18
@@ -507,6 +511,10 @@ jobs:
           user_pref("extensions.pocket.enabled", false);
           user_pref("browser.toolbars.bookmarks.visibility", "never");
           user_pref("intl.locale.requested", "pt-BR");
+
+          /* Se identifica como uma versão mais recente para não ser
+             bloqueado por checagens de versão (ex: Google Search). */
+          user_pref("general.useragent.override", "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0");
           USERJS_EOF
 
           HOME_URL="$(python3 - "$BASE/lynx-home/home.html" <<'PY'
