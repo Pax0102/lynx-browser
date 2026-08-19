@@ -515,6 +515,11 @@ jobs:
           /* Se identifica como uma versão mais recente para não ser
              bloqueado por checagens de versão (ex: Google Search). */
           user_pref("general.useragent.override", "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0");
+
+          /* Usa a configuração de proxy/VPN do sistema operacional.
+             Se houver uma VPN ativa no PC (client app, WireGuard, etc.)
+             ou um proxy configurado no SO, o Lynx já sai por ela. */
+          user_pref("network.proxy.type", 5);
           USERJS_EOF
 
           HOME_URL="$(python3 - "$BASE/lynx-home/home.html" <<'PY'
